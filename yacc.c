@@ -1,4 +1,4 @@
-/*% clang -g -Wall -Wextra % -o #
+/*% clang --pedantic -std=c89 -g -Wall -Wextra % -o #
  * miniyacc - LALR(1) grammars for C
  * See LICENSE for copyright and license details.
  */
@@ -800,12 +800,27 @@ istok(int c)
 int
 nexttk()
 {
-	int n;
+	char stm[4][4] = {
+		{0,4,1,4},
+		{5,5,5,2}, /* '/' */
+		{2,2,2,3}, /* '/' '*' */
+		{2,2,0,3}  /* '/' '*' ... '*' */
+	};
+	int st, n;
 	char c, *p;
 
-	while (isspace(c=fgetc(fin)))
-		if (c == '\n')
-			lineno++;
+	for (st=0; st<4;)
+		switch (c=fgetc(fin)) {
+		default:
+			if (c=='\n')
+				lineno++;
+			st = stm[st][!isspace(c)];
+			break;
+		case '/': st = stm[st][2]; break;
+		case '*': st = stm[st][3]; break;
+		}
+	if (st==5)
+		die("invalid token");
 	switch (c) {
 	case '<':
 		return TLangle;
@@ -837,8 +852,8 @@ nexttk()
 			die("identifier too long");
 		c = fgetc(fin);
 	}
-	if (p == idnt)
-		die("unknown token");
+	if (p==idnt)
+		die("invalid token");
 	*p = 0;
 	if (strcmp(idnt, "%")==0)
 	if (c=='{')
