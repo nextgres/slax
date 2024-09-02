@@ -24,9 +24,9 @@ typedef struct Row Row;
 enum {
 	IdntSz = 64,
 	MaxRhs = 32,
-	MaxTk = 500,
-	MaxNt = 500,
-	MaxRl = 800,
+	MaxTk = 1000,
+	MaxNt = 1000,
+	MaxRl = 5000,
 	MaxTm = 1000,
 
 	TSetSz = (MaxTk+31)/32,
