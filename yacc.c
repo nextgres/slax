@@ -1,5 +1,4 @@
-/*% clang --pedantic -std=c89 -g -Wall -Wextra % -o #
- * miniyacc - LALR(1) grammars for C
+/* miniyacc - LALR(1) grammars for C
  * See LICENSE for copyright and license details.
  */
 #include <assert.h>
