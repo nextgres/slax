@@ -444,7 +444,7 @@ tblset(int *tbl, Item *i, Term *t)
 	s = t->rule->rhs[t->dot];
 	if (s!=S) {
 		/* shift */
-		if (s>=ntk)
+		if (s>=ntk || tbl[s]==-1)
 			return;
 		assert(i->gtbl[s]);
 		act = ARight;
