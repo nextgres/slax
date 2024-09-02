@@ -818,6 +818,7 @@ nexttk()
 			break;
 		case '/': st = stm[st][2]; break;
 		case '*': st = stm[st][3]; break;
+		case EOF: return TEof;
 		}
 	if (st==5)
 		die("invalid token");
@@ -834,8 +835,6 @@ nexttk()
 		return TColon;
 	case '{':
 		return TLBrack;
-	case EOF:
-		return TEof;
 	case '\'':
 		idnt[0] = '\'';
 		idnt[1] = fgetc(fin);
