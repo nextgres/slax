@@ -38,6 +38,8 @@ struct Rule {
 	char *act;
 	int actln;
 	int prec;
+	int midpos;
+	Sym *midrhs;
 };
 
 struct TSet {
@@ -56,6 +58,7 @@ struct Info {
 	} assoc;
 	char name[IdntSz];
 	char type[IdntSz];
+	int iskw;
 };
 
 struct Term {
@@ -95,6 +98,9 @@ int doty;  /* type-checking enabled */
 
 int srconf, rrconf;
 int actsz;
+Sym idtoks[MaxRhs];
+int nidtoks = 0;
+char lexfunc[IdntSz] = "yylex";
 int *act;
 int *chk;
 int *adsp;
@@ -647,6 +653,8 @@ tblout()
 {
 	int *o, n, m;
 
+	fprintf(fout, "#include <stdio.h>\n");
+	fprintf(fout, "#include <string.h>\n");
 	fprintf(fout, "short yyini = %d;\n", ini->id-1);
 	fprintf(fout, "short yyntoks = %d;\n", ntk);
 	o = yalloc(nrl+nst+nsy, sizeof o[0]);
@@ -690,6 +698,57 @@ tblout()
 		o[m++] = n;
 	}
 	aout("yytrns", o, m);
+	/* emit keyword table and identifier token */
+	//if (nidtoks > 0) {
+  {
+		int i;
+		fprintf(fout, "static short yyidtoks[] = {");
+		for (i=0; i<nidtoks; i++)
+			fprintf(fout, "%s%d", i?",":"", idtoks[i]);
+		fprintf(fout, "};\n");
+		fprintf(fout, "static int yyidtokn = %d;\n", nidtoks);
+		if (fhdr) {
+			fprintf(fhdr, "extern short yyidtoks[];\n");
+			fprintf(fhdr, "extern int yyidtokn;\n");
+		}
+		for (n=0; n<ntk; n++) {
+			if (is[n].iskw)
+				o[n] = 1; /* explicitly marked */
+			else if (n == 0)
+				o[n] = 0; /* $ end token */
+			else if (is[n].name[0] == '\'')
+				o[n] = 0; /* character literal */
+			else {
+				/* check if this token is one of the id tokens */
+				int isid = 0;
+				for (i=0; i<nidtoks; i++)
+					if (n == idtoks[i]) { isid = 1; break; }
+				o[n] = isid ? 0 : 1; /* id tokens not eligible */
+			}
+		}
+		aout("yykw", o, ntk);
+	}
+#if 0
+    else {
+		aout("yykw", o, ntk);
+		fprintf(fout, "static short yyidtoks[] = {}");
+		fprintf(fout, "static int yyidtokn = 0;\n");
+  }
+#endif
+	/* emit token name table for error messages */
+	fprintf(fout, "static const char *yytokn[] = {\n");
+	for (n=0; n<ntk; n++) {
+		if (is[n].name[0])
+			fprintf(fout, "\t\"%s\",\n", is[n].name);
+		else
+			fprintf(fout, "\t\"$end\",\n");
+	}
+	fprintf(fout, "};\n");
+	/* emit lexer function define */
+	if (strcmp(lexfunc, "yylex") != 0)
+		fprintf(fout, "#define YYLEX %s\n", lexfunc);
+	else
+		fprintf(fout, "#ifndef YYLEX\n#define YYLEX yylex\n#endif\n");
 	if (fhdr) {
 		fputs("int yyparse(void);\n", fhdr);
 		fputs("#ifndef YYSTYPE\n", fhdr);
@@ -769,6 +828,9 @@ enum {
 	TNonassoc,
 	TPrec,
 	TStart,
+	TKeyword, /* %keyword */
+	TIdentifier, /* %identifier */
+	TLexical, /* %lexical */
 	TEof
 };
 
@@ -785,6 +847,9 @@ struct {
 	{ "%nonassoc", TNonassoc },
 	{ "%prec", TPrec },
 	{ "%start", TStart },
+	{ "%keyword", TKeyword },
+	{ "%identifier", TIdentifier },
+	{ "%lexical", TLexical },
 	{ 0, 0 }
 };
 
@@ -793,7 +858,7 @@ char idnt[IdntSz];
 int
 istok(int c)
 {
-	return isalnum(c) || c=='_' || c=='%';
+	return isalnum(c) || c=='_' || c=='%' || c=='.';
 }
 
 int
@@ -867,6 +932,8 @@ char *
 cpycode()
 {
 	int c, nest, in, len, pos;
+	int cmtblk;
+	int cmtln;
 	char *s;
 
 	len = 64;
@@ -875,24 +942,62 @@ cpycode()
 	pos = 1;
 	nest = 1;
 	in = 0;
+	cmtblk = 0;
+	cmtln = 0;
 
 	while (nest) {
 		c = fgetc(fin);
-		if (in) {
-			if (c == in)
-			if (s[pos-1] != '\\')
+		if (c == EOF)
+			die("syntax error, unclosed code block");
+		if (c == '\n') {
+			lineno++;
+			cmtln = 0;
+		}
+		if (cmtblk) {
+			if (c == '*' && pos>0 && s[pos-1] != '/') {
+				/* potential end: peek for / */
+				if (pos>=len)
+				if (!(s=realloc(s, len=2*len+1)))
+					die("out of memory");
+				s[pos++] = c;
+				c = fgetc(fin);
+				if (c == EOF)
+					die("syntax error, unclosed code block");
+				if (c == '/')
+					cmtblk = 0;
+			}
+		} else if (cmtln) {
+			/* skip until newline (already handled above) */
+		} else if (in) {
+			if (c == in && s[pos-1] != '\\')
 				in = 0;
 		} else {
+			if (c == '/' && pos>0) {
+				int c2 = fgetc(fin);
+				if (c2 == '*') {
+					cmtblk = 1;
+					if (pos>=len)
+					if (!(s=realloc(s, len=2*len+1)))
+						die("out of memory");
+					s[pos++] = c;
+					c = c2;
+				} else if (c2 == '/') {
+					cmtln = 1;
+					if (pos>=len)
+					if (!(s=realloc(s, len=2*len+1)))
+						die("out of memory");
+					s[pos++] = c;
+					c = c2;
+				} else {
+					ungetc(c2, fin);
+				}
+			}
 			if (c == '"' || c == '\'')
 				in = c;
 			if (c == '{')
 				nest++;
 			if (c == '}')
 				nest--;
-			if (c == EOF)
-				die("syntax error, unclosed code block");
-			if (c == '\n')
-				lineno++;
 		}
 		if (pos>=len)
 		if (!(s=realloc(s, len=2*len+1)))
@@ -1003,6 +1108,55 @@ getdecls()
 		p = ++prec;
 		a = ANonassoc;
 		goto addtoks;
+	case TKeyword:
+		/* like %token but marks tokens as keywords */
+		p = 0;
+		a = ANone;
+		tk = gettype(type);
+		while (tk==TIdnt || tk==TTokchr) {
+			si = 0;
+			n = findsy(idnt, 0);
+			if (n>=MaxTk && n<nsy)
+				die("non-terminal redeclared as token");
+			if (n==nsy) {
+				if (ntk>=MaxTk)
+					die("too many tokens");
+				n = ntk++;
+			}
+			si = &is[n];
+			strcpy(si->name, idnt);
+			strcpy(si->type, type);
+			si->prec = p;
+			si->assoc = a;
+			si->iskw = 1;
+			tk = nexttk();
+		}
+		break;
+	case TIdentifier:
+		/* %identifier <token1> [token2] ... */
+		tk = nexttk();
+		if (tk!=TIdnt)
+			die("syntax error, ident expected after %identifier");
+		while (tk==TIdnt) {
+			n = findsy(idnt, 0);
+			if (n>=nsy)
+				die("unknown token in %identifier");
+			if (n>=ntk)
+				die("%identifier must name a token, not a non-terminal");
+			if (nidtoks>=MaxRhs)
+				die("too many identifier tokens");
+			idtoks[nidtoks++] = n;
+			tk = nexttk();
+		}
+		break;
+	case TLexical:
+		/* %lexical <function_name> */
+		tk = nexttk();
+		if (tk!=TIdnt)
+			die("syntax error, ident expected after %lexical");
+		strcpy(lexfunc, idnt);
+		tk = nexttk();
+		break;
 	case TToken:
 		p = 0;
 		a = ANone;
@@ -1080,6 +1234,7 @@ getgram()
 	int tk;
 	Sym hd, *p, s;
 	Rule *r;
+	int midcnt = 0; /* counter for anonymous mid-rule nonterminals */
 
 	for (;;) {
 		tk = nexttk();
@@ -1109,13 +1264,16 @@ getgram()
 			r->lhs = hd;
 			r->act = 0;
 			p = r->rhs;
-			while ((tk=nexttk())==TIdnt || tk==TTokchr || tk==TPrec) {
+			tk = nexttk();
+		rhsloop:
+			while (tk==TIdnt || tk==TTokchr || tk==TPrec) {
 				if (tk==TPrec) {
 					tk = nexttk();
 					if (tk!=TIdnt
 					|| (s=findsy(idnt, 0))>=ntk)
 						die("token expected after %prec");
 					r->prec = is[s].prec;
+					tk = nexttk();
 					continue;
 				}
 				s = findsy(idnt, 1);
@@ -1124,13 +1282,51 @@ getgram()
 					r->prec = is[s].prec;
 				if (p-r->rhs >= MaxRhs-1)
 					die("production rule too long");
-			}
-			*p = S;
-			if (tk==TLBrack) {
-				r->actln = lineno;
-				r->act = cpycode();
 				tk = nexttk();
 			}
+			if (tk==TLBrack) {
+				char *actcode;
+				int actln;
+
+				actln = lineno;
+				actcode = cpycode();
+				tk = nexttk();
+				if (tk==TIdnt || tk==TTokchr
+				|| tk==TPrec || tk==TLBrack) {
+					/* Mid-rule action: desugar
+					 * into @@N -> { action }
+					 * and insert @@N into RHS. */
+					char mname[IdntSz];
+					Rule *mr;
+
+					snprintf(mname, sizeof mname,
+						"@@%d", ++midcnt);
+					s = findsy(mname, 1);
+					if (nrl>=MaxRl-1)
+						die("too many rules");
+					mr = &rs[nrl++];
+					mr->lhs = s;
+					mr->rhs[0] = S;
+					mr->actln = actln;
+					mr->act = actcode;
+					mr->midpos = p - r->rhs;
+					if (mr->midpos > 0) {
+						mr->midrhs = yalloc(mr->midpos,
+							sizeof(Sym));
+						memcpy(mr->midrhs, r->rhs,
+							mr->midpos * sizeof(Sym));
+					}
+					*p++ = s;
+					if (p-r->rhs >= MaxRhs-1)
+						die("production rule too long");
+					goto rhsloop;
+				} else {
+					/* End-of-rule action */
+					r->actln = actln;
+					r->act = actcode;
+				}
+			}
+			*p = S;
 		} while (tk==TBar);
 		if (tk!=TSemi)
 			die("syntax error, ; or | expected");
@@ -1194,14 +1390,30 @@ actout(Rule *r)
 			ty = 0;
 		readnum:
 			l = strtol(p-1, &p, 10);
-			if (l > ar) {
-				lineno = i;
-				die("invalid $n");
+			if (r->midpos) {
+				/* mid-rule action: $N accesses
+				 * enclosing rule's Nth symbol;
+				 * valid range is 1..midpos */
+				if (l > r->midpos) {
+					lineno = i;
+					die("invalid $n in mid-rule action");
+				}
+				fprintf(fout, "ps[%d].val",
+					(int)l - r->midpos);
+			} else {
+				if (l > ar) {
+					lineno = i;
+					die("invalid $n");
+				}
+				fprintf(fout, "ps[%d].val", (int)l);
 			}
-			fprintf(fout, "ps[%d].val", (int)l);
 			if (doty) {
-				if (!ty && l>0)
-					ty = is[r->rhs[l-1]].type;
+				if (!ty && l>0) {
+					if (r->midpos && r->midrhs)
+						ty = is[r->midrhs[l-1]].type;
+					else
+						ty = is[r->rhs[l-1]].type;
+				}
 				if (!ty || !ty[0]) {
 					lineno = i;
 					die("$n has no type");
@@ -1326,12 +1538,39 @@ char *code0[] = {
 "#define YYSTYPE int\n",
 "#endif\n",
 "YYSTYPE yylval;\n",
+"void yyerror(const char *);\n",
+"static void\n",
+"yysyntax_error(int s, int tk)\n",
+"{\n",
+"	char buf[256];\n",
+"	int n, cnt, len;\n",
+"\n",
+"	len = snprintf(buf, sizeof buf, \"syntax error, unexpected %s\",\n",
+"		(tk >= 0 && tk < yyntoks) ? yytokn[tk] : \"token\");\n",
+"	/* list a few expected tokens */\n",
+"	cnt = 0;\n",
+"	for (n = 0; n < yyntoks && len < (int)sizeof buf - 20; n++) {\n",
+"		int idx = yyadsp[s] + n;\n",
+"		if (idx >= 0 && idx < (int)(sizeof yyact/sizeof yyact[0])\n",
+"		    && yychk[idx] == n) {\n",
+"			len += snprintf(buf+len, sizeof buf - len,\n",
+"				\"%s %s\", cnt==0 ? \", expecting\" : \" or\",\n",
+"				yytokn[n]);\n",
+"			if (++cnt >= 5) {\n",
+"				len += snprintf(buf+len, sizeof buf - len,\n",
+"					\" ...\");\n",
+"				break;\n",
+"			}\n",
+"		}\n",
+"	}\n",
+"	yyerror(buf);\n",
+"}\n",
 "\n",
 "int\n",
 "yyparse()\n",
 "{\n",
 "	enum {\n",
-"		StackSize = 100,\n",
+"		StackSize = 1000,\n",
 "		ActSz = sizeof yyact / sizeof yyact[0],\n",
 "	};\n",
 "	struct {\n",
@@ -1340,6 +1579,13 @@ char *code0[] = {
 "	} stk[StackSize], *ps;\n",
 "	int r, h, n, s, tk;\n",
 "	YYSTYPE yyval;\n",
+"	struct {\n",
+"		YYSTYPE val;\n",
+"		int state;\n",
+"	} slax_stk[StackSize];\n",
+"	int slax_ps_off, slax_s, slax_tk;\n",
+"	int slax_pending = 0;\n",
+"	int slax_idxi = 0; /* index into yyidtoks[] to try next */\n",
 "\n",
 "	ps = stk;\n",
 "	ps->state = s = yyini;\n",
@@ -1347,27 +1593,75 @@ char *code0[] = {
 "loop:\n",
 "	n = yyadsp[s];\n",
 "	if (tk < 0 && n > -yyntoks)\n",
-"		tk = yytrns[yylex()];\n",
+"		tk = yytrns[YYLEX()];\n",
 "	n += tk;\n",
 "	if (n < 0 || n >= ActSz || yychk[n] != tk) {\n",
+"		/* When a keyword has no action in the current state, check if\n",
+"		 * any identifier token would have a valid shift. If so, save\n",
+"		 * full parser state. If default reductions eventually lead\n",
+"		 * to an error, backtrack and retry as identifier. */\n",
+"		if (tk >= 0 && yykw[tk] && !slax_pending) {\n",
+"			int _ii;\n",
+"			for (_ii = 0; _ii < yyidtokn; _ii++) {\n",
+"				int _idt = yyidtoks[_ii];\n",
+"				int _idn = yyadsp[s] + _idt;\n",
+"				if (_idn >= 0 && _idn < ActSz && yychk[_idn] == _idt) {\n",
+"					slax_ps_off = ps - stk;\n",
+"					slax_s = s;\n",
+"					slax_tk = tk;\n",
+"					slax_idxi = _ii;\n",
+"					memcpy(slax_stk, stk, (slax_ps_off+1)*sizeof stk[0]);\n",
+"					slax_pending = 1;\n",
+"					break;\n",
+"				}\n",
+"			}\n",
+"		}\n",
 "		r = yyadef[s];\n",
-"		if (r < 0)\n",
+"		if (r < 0) {\n",
+"			if (slax_pending) {\n",
+"				memcpy(stk, slax_stk, (slax_ps_off+1)*sizeof stk[0]);\n",
+"				ps = stk + slax_ps_off;\n",
+"				s = slax_s;\n",
+"				tk = yyidtoks[slax_idxi];\n",
+"				/* check if more id tokens to try on next failure */\n",
+"				{\n",
+"					int _ni;\n",
+"					slax_pending = 0;\n",
+"					for (_ni = slax_idxi+1; _ni < yyidtokn; _ni++) {\n",
+"						int _idt = yyidtoks[_ni];\n",
+"						int _idn = yyadsp[s] + _idt;\n",
+"						if (_idn >= 0 && _idn < ActSz && yychk[_idn] == _idt) {\n",
+"							slax_idxi = _ni;\n",
+"							slax_pending = 1;\n",
+"							break;\n",
+"						}\n",
+"					}\n",
+"				}\n",
+"				goto loop;\n",
+"			}\n",
+"			yysyntax_error(s, tk);\n",
 "			return -1;\n",
+"		}\n",
 "		goto reduce;\n",
 "	}\n",
 "	n = yyact[n];\n",
-"	if (n == -1)\n",
+"	if (n == -1) {\n",
+"		yysyntax_error(s, tk);\n",
 "		return -1;\n",
+"	}\n",
 "	if (n < 0) {\n",
 "		r = - (n+2);\n",
 "		goto reduce;\n",
 "	}\n",
 "	tk = -1;\n",
 "	yyval = yylval;\n",
+"	slax_pending = 0;\n",
 "stack:\n",
 "	ps++;\n",
-"	if (ps-stk >= StackSize)\n",
+"	if (ps-stk >= StackSize) {\n",
+"		yyerror(\"parser stack overflow\");\n",
 "		return -2;\n",
+"	}\n",
 "	s = n;\n",
 "	ps->state = s;\n",
 "	ps->val = yyval;\n",
